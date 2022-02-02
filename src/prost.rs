@@ -1,4 +1,4 @@
-use super::{websys_client};
+use super::websys_client;
 use proc_macro2::TokenStream;
 use prost_build::{Config, Method, Service};
 use quote::ToTokens;
@@ -142,7 +142,6 @@ impl ServiceGenerator {
 
 impl prost_build::ServiceGenerator for ServiceGenerator {
     fn generate(&mut self, service: prost_build::Service, _buf: &mut String) {
-
         if self.builder.build_websys_client {
             let client = websys_client::generate(
                 &service,
@@ -155,7 +154,6 @@ impl prost_build::ServiceGenerator for ServiceGenerator {
     }
 
     fn finalize(&mut self, buf: &mut String) {
-
         if self.builder.build_websys_client && !self.clients.is_empty() {
             let clients = &self.clients;
 
@@ -190,7 +188,6 @@ pub struct Builder {
 }
 
 impl Builder {
-
     /// Enable or disable gRPC client code generation.
     pub fn build_websys_client(mut self, enable: bool) -> Self {
         self.build_websys_client = enable;
@@ -326,6 +323,7 @@ impl Builder {
         if self.compile_well_known_types {
             config.compile_well_known_types();
         }
+        config.protoc_arg("--experimental_allow_proto3_optional");
         config.service_generator(Box::new(ServiceGenerator::new(self)));
 
         config.compile_protos(protos, includes)?;
