@@ -23,6 +23,9 @@ pub fn generate<T: Service>(
         pub mod #client_mod {
             #![allow(unused_variables, dead_code, missing_docs)]
             use prost::Message;
+            use reqwest::header::HeaderName;
+            use anyhow::Result;
+            use urlencoding;
             pub struct #service_name {
                 host: String
             }
@@ -60,15 +63,14 @@ fn generate_methods<T: Service>(
     let mut stream = TokenStream::new();
 
     for method in service.methods() {
-
         stream.extend(generate_doc_comments(method.comment()));
 
         let method = match (method.client_streaming(), method.server_streaming()) {
             (false, false) => generate_unary(service, method, proto_path, compile_well_known_types),
-            (false, true) => generate_server_streaming(service, method, proto_path, compile_well_known_types),
-            (true, false) => {
-                TokenStream::new()
+            (false, true) => {
+                generate_server_streaming(service, method, proto_path, compile_well_known_types)
             }
+            (true, false) => TokenStream::new(),
             (true, true) => TokenStream::new(),
         };
 
@@ -78,21 +80,18 @@ fn generate_methods<T: Service>(
     stream
 }
 
-fn generate_streaming_support(
-    streaming_support: bool,
-) -> TokenStream {
-
+fn generate_streaming_support(streaming_support: bool) -> TokenStream {
     if streaming_support {
         return quote! {
 
             pub fn initialise_stream<T: prost::Message>(request: T, web_socket: &web_sys::WebSocket) {
                 let headers = "content-type: application/grpc-web+proto\r\nx-grpc-web: 1\r\n";
                 web_socket.send_with_u8_array(headers.as_bytes()).unwrap();
-            
+
                 // Send frame
                 let frame = Self::websocket_frame_request(request);
                 web_socket.send_with_u8_array(&frame).unwrap();
-            
+
                 // Send finish
                 let bytes: Vec<u8> = vec!(1);
                 web_socket.send_with_u8_array(&bytes).unwrap();
@@ -114,10 +113,9 @@ fn generate_streaming_support(
 
                 frame
             }
-        }
+        };
     } else {
-        return quote! {
-        }
+        return quote! {};
     }
 }
 
@@ -127,9 +125,7 @@ fn generate_server_streaming<T: Method, S: Service>(
     _proto_path: &str,
     _compile_well_known_types: bool,
 ) -> TokenStream {
-
-    quote! {
-    }
+    quote! {}
 }
 
 fn generate_unary<T: Method, S: Service>(
@@ -140,27 +136,41 @@ fn generate_unary<T: Method, S: Service>(
 ) -> TokenStream {
     let ident = format_ident!("{}", method.name());
     let (request, response) = method.request_response_name(proto_path, compile_well_known_types);
-    let url = format!("/{}.{}/{}", service.package(), service.name(), method.identifier());
+    let url = format!(
+        "/{}.{}/{}",
+        service.package(),
+        service.name(),
+        method.identifier()
+    );
 
     quote! {
         pub async fn #ident(
             &self,
             request: #request
-        ) -> Result<#response, Box<dyn std::error::Error>> {
+        ) -> anyhow::Result<#response> {
 
             let frame = Self::frame_request(request);
 
             let client = reqwest::Client::new();
-            let mut bytes = client.post(format!("{}{}", &self.host, #url))
+
+            let headers;
+            let response = client.post(format!("{}{}", &self.host, #url))
                 .header(reqwest::header::CONTENT_TYPE, "application/grpc-web+proto")
                 .header("x-grpc-web", "1")
                 .body(frame)
                 .send()
-                .await?
-                .bytes()
                 .await?;
 
+            headers = response.headers().clone();
+
+            let grpc_status = headers.get("grpc-status").map_or("0", |h| h.to_str().unwrap()).clone();
+            if grpc_status != "0" {
+                let grpc_message = String::from(urlencoding::decode(headers.get("grpc-message").unwrap().to_str()?.clone())?);
+                anyhow::bail!(grpc_message);
+            }
+
             // Todo read in the whole length of the buffer.
+            let mut bytes = response.bytes().await?;
             let mut dst = [0u8; 4];
             dst.clone_from_slice(&bytes[1..5]);
             let size = u32::from_be_bytes(dst);
